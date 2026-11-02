@@ -24,7 +24,12 @@ assert_eq "$?" "0" "exit code"
 assert_file "$GC/skills/ticket-dev/SKILL.md"
 assert_file "$GC/skills/ticket-dev/routing.conf"
 assert_file "$GC/skills/ticket-dev/.install-manifest"
-for a in explorer implementer verifier; do assert_file "$GC/agents/ticket-dev-$a.md"; done
+for a in explorer implementer verifier browser-verifier; do assert_file "$GC/agents/ticket-dev-$a.md"; done
+assert_file "$GC/skills/ticket-dev/browser.conf"
+for s in ticket-worktree ticket-env browser-check codex-review; do
+	[ -x "$GC/skills/ticket-dev/scripts/$s.sh" ] && pass || fail "$s.sh not installed executable"
+done
+assert_contains "$(cat "$GC/agents/ticket-dev-browser-verifier.md")" "g=\"$GC/skills/ticket-dev/scripts/guard.sh\"" "browser verifier global guard path"
 [ -x "$GC/skills/ticket-dev/scripts/guard.sh" ] && pass || fail "scripts not executable"
 assert_contains "$(cat "$GC/agents/ticket-dev-explorer.md")" "g=\"$GC/skills/ticket-dev/scripts/guard.sh\"" "global guard path"
 assert_eq "$(cat "$GC/agents/my-agent.md")" "my agent" "foreign agent"

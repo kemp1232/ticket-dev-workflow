@@ -27,7 +27,8 @@ Usage:
   route.sh --triage (--ticket TEXT | --ticket-stdin)
   route.sh --files N --modules N --uncertainty none|low|high --tests good|partial|none|na
            [--signals a,b] [--dismiss "flag:reason"]... [--decisions N] [--new-pattern]
-           [--model ALIAS] [--gpt] [--ticket TEXT | --ticket-stdin]
+           [--model ALIAS] [--gpt] [--codex-review | --no-codex-review]
+           [--ticket TEXT | --ticket-stdin]
   route.sh --print-config
 
 Inputs (full mode):
@@ -43,6 +44,8 @@ Inputs (full mode):
   --new-pattern      no existing pattern in the repository to follow
   --model ALIAS      developer override for the implementation model
   --gpt              developer asked for a GPT review package
+  --codex-review     developer asked for a Codex CLI cross-model review of this ticket
+  --no-codex-review  developer declined the project's configured Codex review
 
 Signals:
   HIGH risk:   auth security secrets migration data-loss payments irreversible infra
@@ -106,11 +109,23 @@ MODEL_STANDARD=sonnet
 MODEL_COMPLEX=opus
 MODEL_EXPLORER=haiku
 MODEL_VERIFIER=haiku
+MODEL_BROWSER_VERIFIER=sonnet
 LIGHT_MAX_FILES=2
 REVIEW_ROUTES=complex
+CODEX_REVIEW_ROUTES=none
+CODEX_REVIEW_SOURCE=default
 CONFIG_SOURCES=""
 
+valid_routes() { # comma list of light standard complex none
+	[ -n "$1" ] || return 1
+	for _r in $(printf '%s' "$1" | tr ',' ' '); do
+		in_list "$_r" "light standard complex none" || return 1
+	done
+	return 0
+}
+
 # Parse KEY=value lines without executing anything; unknown keys are ignored.
+# load_conf FILE base|project
 load_conf() {
 	[ -f "$1" ] || return 0
 	CONFIG_SOURCES="${CONFIG_SOURCES:+$CONFIG_SOURCES }$1"
@@ -121,7 +136,7 @@ load_conf() {
 		_key=${_line%%=*}
 		_val=${_line#*=}
 		case "$_key" in
-		MODEL_LIGHT | MODEL_STANDARD | MODEL_COMPLEX | MODEL_EXPLORER | MODEL_VERIFIER)
+		MODEL_LIGHT | MODEL_STANDARD | MODEL_COMPLEX | MODEL_EXPLORER | MODEL_VERIFIER | MODEL_BROWSER_VERIFIER)
 			if valid_model "$_val"; then
 				eval "$_key=\$_val"
 				in_list "$_val" "$KNOWN_MODELS" || warn "$_key=$_val is not a known alias; make sure your Claude Code version supports it"
@@ -133,11 +148,19 @@ load_conf() {
 			if is_uint "$_val"; then LIGHT_MAX_FILES=$_val; else warn "ignored invalid LIGHT_MAX_FILES=$_val in $1"; fi
 			;;
 		REVIEW_ROUTES)
-			_ok=1
-			for _r in $(printf '%s' "$_val" | tr ',' ' '); do
-				in_list "$_r" "light standard complex none" || _ok=0
-			done
-			if [ "$_ok" -eq 1 ] && [ -n "$_val" ]; then REVIEW_ROUTES=$_val; else warn "ignored invalid REVIEW_ROUTES=$_val in $1"; fi
+			if valid_routes "$_val"; then REVIEW_ROUTES=$_val; else warn "ignored invalid REVIEW_ROUTES=$_val in $1"; fi
+			;;
+		CODEX_REVIEW_ROUTES)
+			# Codex sends the ticket's code to OpenAI, so only a project's own config can
+			# opt that repository in; a value in the shared base config is ignored.
+			if [ "${2:-base}" != project ]; then
+				[ "$_val" = none ] || warn "ignored CODEX_REVIEW_ROUTES=$_val in $1: automatic Codex review must be enabled per project in .claude/ticket-dev/routing.conf"
+			elif valid_routes "$_val"; then
+				CODEX_REVIEW_ROUTES=$_val
+				CODEX_REVIEW_SOURCE=$1
+			else
+				warn "ignored invalid CODEX_REVIEW_ROUTES=$_val in $1"
+			fi
 			;;
 		*) warn "ignored unknown key $_key in $1" ;;
 		esac
@@ -206,6 +229,7 @@ DECISIONS=0
 NEW_PATTERN=0
 OVERRIDE=""
 GPT_REQUESTED=0
+CODEX_FLAG=""
 PROJECT_DIR=""
 CONFIG_FILE="$SKILL_DIR/routing.conf"
 KEYWORDS_FILE="$SKILL_DIR/risk-keywords.txt"
@@ -228,6 +252,8 @@ while [ $# -gt 0 ]; do
 	--new-pattern) NEW_PATTERN=1 ;;
 	--model) need $# "$1"; OVERRIDE=$2; shift ;;
 	--gpt) GPT_REQUESTED=1 ;;
+	--codex-review) CODEX_FLAG=yes ;;
+	--no-codex-review) CODEX_FLAG=no ;;
 	--project-dir) need $# "$1"; PROJECT_DIR=$2; shift ;;
 	--config) need $# "$1"; CONFIG_FILE=$2; shift ;;
 	--keywords) need $# "$1"; KEYWORDS_FILE=$2; shift ;;
@@ -240,12 +266,13 @@ done
 if [ -z "$PROJECT_DIR" ]; then
 	PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 fi
-load_conf "$CONFIG_FILE"
-load_conf "$PROJECT_DIR/.claude/ticket-dev/routing.conf"
+load_conf "$CONFIG_FILE" base
+load_conf "$PROJECT_DIR/.claude/ticket-dev/routing.conf" project
 
 print_models() {
 	printf 'explorer_model=%s\n' "$MODEL_EXPLORER"
 	printf 'verifier_model=%s\n' "$MODEL_VERIFIER"
+	printf 'browser_verifier_model=%s\n' "$MODEL_BROWSER_VERIFIER"
 }
 
 # ---------------------------------------------------------------- config mode
@@ -254,7 +281,9 @@ if [ "$MODE" = config ]; then
 	printf 'config_sources=%s\n' "${CONFIG_SOURCES:-none (built-in defaults)}"
 	printf 'MODEL_LIGHT=%s\nMODEL_STANDARD=%s\nMODEL_COMPLEX=%s\n' "$MODEL_LIGHT" "$MODEL_STANDARD" "$MODEL_COMPLEX"
 	printf 'MODEL_EXPLORER=%s\nMODEL_VERIFIER=%s\nLIGHT_MAX_FILES=%s\n' "$MODEL_EXPLORER" "$MODEL_VERIFIER" "$LIGHT_MAX_FILES"
+	printf 'MODEL_BROWSER_VERIFIER=%s\n' "$MODEL_BROWSER_VERIFIER"
 	printf 'REVIEW_ROUTES=%s\n' "$REVIEW_ROUTES"
+	printf 'CODEX_REVIEW_ROUTES=%s (%s)\n' "$CODEX_REVIEW_ROUTES" "$CODEX_REVIEW_SOURCE"
 	printf 'warnings=%s\n' "$WARNINGS"
 	exit 0
 fi
@@ -429,6 +458,25 @@ fi
 # for the routes listed in REVIEW_ROUTES (default: complex only).
 if in_list "$ROUTE" "$(printf '%s' "$REVIEW_ROUTES" | tr ',' ' ')"; then REVIEW=yes; else REVIEW=no; fi
 
+# At most one independent reviewer per ticket. Precedence: the developer's explicit
+# --codex-review, then the project's opted-in CODEX_REVIEW_ROUTES, then the Claude
+# review above. When Codex is chosen, the Claude review becomes its fallback (used
+# only if REVIEW_ROUTES would have selected it and Codex cannot run).
+if [ "$CODEX_FLAG" = yes ]; then
+	CODEX=requested
+elif [ "$CODEX_FLAG" = no ]; then
+	CODEX=no
+elif in_list "$ROUTE" "$(printf '%s' "$CODEX_REVIEW_ROUTES" | tr ',' ' ')"; then
+	CODEX=configured
+else
+	CODEX=no
+fi
+FALLBACK=none
+if [ "$CODEX" != no ]; then
+	[ "$REVIEW" = yes ] && FALLBACK=claude
+	REVIEW=no
+fi
+
 # ---------------------------------------------------------------- output
 
 printf 'complexity=%s\n' "$COMPLEXITY"
@@ -443,6 +491,8 @@ printf 'blocking_questions=%s\n' "$DECISIONS"
 printf 'gpt_review=%s\n' "$GPT"
 printf 'verification=%s\n' "$VERIFICATION"
 printf 'independent_review=%s\n' "$REVIEW"
+printf 'codex_review=%s\n' "$CODEX"
+printf 'review_fallback=%s\n' "$FALLBACK"
 printf 'signals=%s\n' "$(join_commas "$EFFECTIVE")"
 printf 'flags_detected=%s\n' "$FLAGS_DETECTED"
 printf 'flags_dismissed=%s\n' "$FLAGS_DISMISSED"

@@ -16,6 +16,9 @@ REAL_HOME=$HOME
 export HOME="$TEST_TMP/home"
 mkdir -p "$HOME"
 unset CLAUDE_CONFIG_DIR
+# Per-ticket temp dirs (ticket-env.sh) go inside the test's temp dir and vanish with it.
+export TICKET_DEV_TMP_BASE="$TEST_TMP/tmpbase"
+unset TICKET_DEV_LOG_DIR TICKET_DEV_PORT TICKET_DEV_TICKET
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com

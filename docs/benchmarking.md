@@ -20,7 +20,7 @@ Never fill in a number you did not measure. If a metric is unavailable, write `n
 
 1. **Pick tickets.** Choose 6 to 10 past tickets from your repository with known good outcomes: about three LOW, three MEDIUM and two to four HIGH. Note the commit each started from.
 2. **Pick configurations.** For example: the default routing, everything on Sonnet (`--model sonnet`), and a candidate change (a project `routing.conf` with the new alias). Change one thing at a time.
-3. **Isolate each run.** Use a fresh worktree per ticket and configuration so runs do not see each other's changes:
+3. **Isolate each run.** Use a fresh worktree per ticket and configuration so runs do not see each other's changes. Interactively, `ticket-worktree.sh start <ticket>-<config> --ticket "<text>"` does this, and runs started this way can execute in parallel. Each gets its own temp dir, port and logs. Headless:
 
    ```bash
    git worktree add ../bench-T1-default <start-commit>
@@ -42,8 +42,20 @@ Never fill in a number you did not measure. If a metric is unavailable, write `n
 7. **Record** results in [benchmark-results.template.csv](benchmark-results.template.csv). Compare medians per level, not totals.
 8. **Decide.** Change a default only when the candidate is at least as correct (first-pass success, regressions) and measurably better on time or usage. Correctness wins ties.
 
+## Optional stages
+
+Measure the optional stages separately from the base workflow; they change cost and outcome on different tickets:
+
+| Stage | Extra metric |
+|---|---|
+| Browser verification | Defects found that checks missed; false alarms (environment, flaky UI); added minutes; the browser verifier's `costUSD` in `modelUsage` |
+| Codex review | Findings per ticket and how many were VERIFIED vs CONFLICTS; fixes that a reviewer confirmed; Codex wall time (`codex.log`); ChatGPT plan usage as Codex reports it |
+| Parallel worktrees | Throughput (tickets per hour) vs single-session runs, and whether checks slowed down from sharing CPU |
+
+Compare "Claude review only" with "Codex review" on the same complex tickets before opting a project in with `CODEX_REVIEW_ROUTES`.
+
 ## Subscription limits vs API billing
 
 - **Claude subscription (Pro, Max, Team, Enterprise):** usage counts against rolling 5-hour and weekly limits that are shared with Claude chat. Cheaper routes stretch those limits, but no money changes hands per token, so report usage as list-price-equivalent estimates or plan percentages.
 - **API key or cloud provider:** billed per token, at the provider's rates.
-- **ChatGPT subscription:** separate from both. It does not include OpenAI API usage, so manual GPT reviews cost nothing extra and an API adapter would.
+- **ChatGPT subscription:** separate from both. It does not include OpenAI API usage, so manual GPT reviews cost nothing extra and an API adapter would. Codex CLI reviews signed in with ChatGPT count against the plan's Codex limits; with an API-key login they are billed per token. Record which applied (the review report states it).

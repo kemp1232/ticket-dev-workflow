@@ -7,7 +7,13 @@
 #   implement  may edit; blocks pushes/commits, discarding changes, history rewrites,
 #              installs, migrations, database clients, deploys/publishing, and
 #              credential files
-# All modes refuse to read or write secret files (.env, keys, credentials).
+#   browser    verify rules, plus: every URL (in commands and MCP browser tools) must
+#              pass browser.conf's host allowlist, playwright-cli must use a named
+#              session opened with the ticket's --config (artifacts outside the repo)
+#              and never attach to a real browser or profile, dev servers start only through
+#              browser-check.sh, and browser/skill installs are blocked
+# All modes refuse to read or write secret files (.env, keys, credentials), and
+# refuse to start Claude Code or Codex sessions or manage worktrees.
 #
 # As a hook it reads the PreToolUse JSON on stdin and exits 0 (allow) or 2
 # (block; the reason on stderr goes back to the subagent).
@@ -19,9 +25,10 @@
 set -u
 set -f
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 MODE=${1:-}
-case "$MODE" in explore | verify | implement) ;; *)
-	echo "usage: guard.sh explore|verify|implement [--command CMD | --edit PATH | --read PATH]" >&2
+case "$MODE" in explore | verify | implement | browser) ;; *)
+	echo "usage: guard.sh explore|verify|implement|browser [--command CMD | --edit PATH | --read PATH | --url URL]" >&2
 	exit 2
 	;;
 esac
@@ -30,16 +37,19 @@ shift
 TOOL=""
 CMD=""
 FPATH=""
+URL=""
 case "${1:-}" in
 --command) TOOL=Bash; CMD=${2:-} ;;
 --edit) TOOL=Edit; FPATH=${2:-} ;;
 --read) TOOL=Read; FPATH=${2:-} ;;
+--url) TOOL=mcp__browser__navigate; URL=${2:-} ;;
 *)
 	INPUT=$(cat)
 	if command -v jq >/dev/null 2>&1 && [ -z "${TICKET_DEV_GUARD_NO_JQ:-}" ]; then
 		TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 		CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 		FPATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null)
+		URL=$(printf '%s' "$INPUT" | jq -r '.tool_input.url // empty' 2>/dev/null)
 	else
 		# Approximate extraction of a JSON string field without jq.
 		extract() {
@@ -51,6 +61,7 @@ case "${1:-}" in
 		CMD=$(extract command)
 		FPATH=$(extract file_path)
 		[ -n "$FPATH" ] || FPATH=$(extract notebook_path)
+		URL=$(extract url)
 	fi
 	if [ -z "$TOOL" ]; then
 		if [ -n "$CMD" ]; then TOOL=Bash; elif [ -n "$FPATH" ]; then TOOL=Edit; fi
@@ -92,9 +103,23 @@ Edit | Write | MultiEdit | NotebookEdit)
 	[ -n "$FPATH" ] && is_secret_path "$FPATH" && block "editing credential or secret files needs developer approval ($FPATH)"
 	exit 0
 	;;
-*) exit 0 ;;
+*)
+	# MCP browser tools (e.g. Claude in Chrome): only approved hosts may be opened.
+	if [ "$MODE" = browser ] && [ -n "$URL" ]; then
+		why=$(bash "$SCRIPT_DIR/browser-check.sh" url-allowed "$URL" 2>&1) || block "$why"
+	fi
+	exit 0
+	;;
 esac
 [ -n "$CMD" ] || exit 0
+
+# The browser verifier hands its report to `browser-check.sh save-report <<'EOF'`.
+# The heredoc body is data written to the ticket's artifact dir, not commands, so
+# only that exact first line is checked.
+_first=$(printf '%s\n' "$CMD" | head -n 1)
+if printf '%s' "$_first" | grep -Eq "^ *bash +[^ ;|&<>]*browser-check\.sh save-report( --required)? *<< *-?['\"]?[A-Za-z_]+['\"]? *$"; then
+	CMD=$_first
+fi
 
 # ------------------------------------------------------------------ helpers
 
@@ -270,7 +295,8 @@ P='^ *([A-Za-z_][A-Za-z0-9_]*=[^ ]* )*((sudo|doas|(bash )?[^ ]*run-check\.sh [A-
 G='git( -[cC] [^ ]+| -[^ ]+)*'
 
 # modes@@extended-regex@@reason
-#   i = implement, v = verify, c = skip when --check/--diff/--dry-run is present
+#   i = implement, v = verify (and browser), b = browser only,
+#   c = skip when --check/--diff/--dry-run is present
 #   @P@ = command position (after VAR=value words and wrappers), @G@ = git plus global options
 RULES='
 iv@@@P@(sudo|doas|su)( |$)@@privilege escalation is never automatic
@@ -336,6 +362,11 @@ iv@@@P@wget( [^ ]+)* (--post-data|--post-file|--method|--body-data)[^ ]*( |$)@@m
 iv@@@P@(chown|chgrp)( |$)@@ownership changes are never automatic
 iv@@@P@chmod( [^ ]+)* -R( |$)@@recursive permission changes need developer approval
 iv@@@P@(kill|pkill|killall|shutdown|reboot|halt|fdisk|diskutil|launchctl|systemctl|crontab)( |$)@@system and process control is never automatic
+iv@@@P@(claude|codex)( |$)@@starting Claude Code or Codex sessions is reserved for the developer and the orchestrator
+iv@@@P@(bash )?[^ ]*(codex-review|ticket-worktree)\.sh( |$)@@cross-model review and worktree management are reserved for the orchestrator and the developer
+iv@@@P@(playwright|playwright-cli)( [^ ]+)* install[^ ]*( |$)@@installing browsers or agent skills needs developer approval
+b@@@P@((npm|pnpm|bun) run|yarn|pnpm|npm) (dev|start|serve|preview)( |$)@@start the dev server with browser-check.sh server start (port, logs and cleanup per ticket)
+b@@@P@(next|vite|nuxt|astro|ng) (dev|start|serve|preview)( |$)@@start the dev server with browser-check.sh server start (port, logs and cleanup per ticket)
 iv@@@P@mkfs[^ ]*( |$)@@system and process control is never automatic
 '
 
@@ -355,7 +386,7 @@ check_segment() {
 		_rest=${_rule#*@@}
 		_re=${_rest%%@@*}
 		_why=${_rest#*@@}
-		case "$MODE:$_modes" in implement:*i* | verify:*v*) ;; *) continue ;; esac
+		case "$MODE:$_modes" in implement:*i* | verify:*v* | browser:*v* | browser:*b*) ;; *) continue ;; esac
 		case "$_modes:$_seg" in *c*:*" --check "* | *c*:*" --diff "* | *c*:*" --dry-run "*) continue ;; esac
 		if printf '%s' "$_seg" | grep -Eq -- "$_re"; then
 			_shown=$(printf '%s' "$_seg" | sed -E -e 's/^ +//' -e 's/ +$//' | cut -c1-120)
@@ -366,10 +397,39 @@ check_segment() {
 	return 0
 }
 
+# Browser mode: URLs must be approved, and playwright-cli must write its snapshots and
+# screenshots to the ticket's artifact dir (browser-check.sh env prints the command).
+browser_segment() {
+	_bs=" $(printf '%s' "$1" | tr -d "\"'" | tr -s '[:space:]' ' ') "
+	if printf '%s' "$_bs" | grep -Eq -- "$P[^ ]*(playwright-cli|playwright|curl|wget|http|https|xh|lynx|w3m|open|xdg-open)( |$)"; then
+		for _w in $_bs; do
+			case "$_w" in http://* | https://* | HTTP://* | HTTPS://* | *=http://* | *=https://*)
+				_why=$(bash "$SCRIPT_DIR/browser-check.sh" url-allowed "${_w#*=}" 2>&1) || block "$_why"
+				;;
+			esac
+		done
+	fi
+	if printf '%s' "$_bs" | grep -Eq -- "$P[^ ]*playwright-cli( |$)"; then
+		case "$_bs" in *" -s="* | *" --session="*) ;; *)
+			block "use the ticket's named session: exploratory_cmd from browser-check.sh env (playwright-cli -s=...)" ;;
+		esac
+		case "$_bs" in *" open "*)
+			case "$_bs" in *" --config "* | *" --config="*) ;; *)
+				block "open the session with exploratory_open from browser-check.sh env (--config keeps artifacts outside the repository)" ;;
+			esac
+			;;
+		esac
+		case "$_bs" in *" attach "* | *" --persistent "* | *" --profile "* | *" --profile="* | *" --extension "*)
+			block "do not attach to a real browser or use a persistent profile; the ticket uses an isolated in-memory session" ;;
+		esac
+	fi
+	return 0
+}
+
 # Redirections, with quoted text masked so '=>' in a search pattern is not a redirect.
 masked=$(mask_double "$(mask_single "$CMD")")
 for _t in $(redirect_targets "$masked"); do
-	if [ "$MODE" = verify ]; then
+	if [ "$MODE" = verify ] || [ "$MODE" = browser ]; then
 		is_temp_target "$_t" || block "the verifier may only redirect output to /dev/null or a temp directory (got '$_t')"
 	else
 		is_secret_path "$_t" && block "writing credential or secret files needs developer approval ($_t)"
@@ -382,6 +442,7 @@ IFS='
 for seg in $(segments "$CMD"); do
 	IFS=$_oldifs
 	check_segment "$seg"
+	[ "$MODE" = browser ] && browser_segment "$seg"
 done
 IFS=$_oldifs
 exit 0

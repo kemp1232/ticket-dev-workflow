@@ -15,6 +15,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 MAX_STATUS_LINES=40
 MAX_CONVENTION_LINES=80
 MAX_SKILLS=30
+MAX_UNTRACKED_RECORD=2000
 
 echo "### Repository"
 echo "root: $ROOT"
@@ -43,6 +44,26 @@ if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
 		echo "pre-existing changes: $count (preserve them: never revert, stash, reset, stage or reformat these)"
 		printf '%s\n' "$status" | head -n "$MAX_STATUS_LINES" | sed 's/^/  /'
 		[ "$count" -gt "$MAX_STATUS_LINES" ] && echo "  ... $((count - MAX_STATUS_LINES)) more (run git status --short)"
+	fi
+	# `git stash create` ignores untracked files, so record their content hashes as one
+	# blob object (no working-tree, index or ref change). codex-review.sh and
+	# browser-check.sh use it to tell the ticket's new files from the developer's.
+	if [ -n "$head" ]; then
+		untracked=$(git -C "$ROOT" -c core.quotePath=false ls-files -o --exclude-standard 2>/dev/null | grep -v '/$')
+		ucount=$(printf '%s' "$untracked" | grep -c . | tr -d ' ')
+		if [ "$ucount" -eq 0 ]; then
+			echo "baseline-untracked: none"
+		elif [ "$ucount" -gt "$MAX_UNTRACKED_RECORD" ]; then
+			echo "baseline-untracked: not recorded ($ucount files, over $MAX_UNTRACKED_RECORD; reviews of new files will report a scope gap)"
+		else
+			hashes=$(printf '%s\n' "$untracked" | (cd "$ROOT" && git hash-object --stdin-paths 2>/dev/null))
+			blob=$(paste -d ' ' <(printf '%s\n' "$hashes") <(printf '%s\n' "$untracked") | git -C "$ROOT" hash-object -w --stdin 2>/dev/null)
+			if [ -n "$blob" ]; then
+				echo "baseline-untracked: $blob ($ucount pre-existing untracked files recorded)"
+			else
+				echo "baseline-untracked: not recorded (git hash-object failed)"
+			fi
+		fi
 	fi
 else
 	echo "git: NOT A GIT REPOSITORY - changes cannot be diffed or undone with git."
@@ -128,6 +149,12 @@ else
 	echo "project rules: none (.claude/rules/)"
 fi
 bash "$SCRIPT_DIR/route.sh" --print-config --project-dir "$ROOT" 2>&1 | sed 's/^/  /' | sed '1s/^  /routing: /'
+bash "$SCRIPT_DIR/browser-check.sh" config --summary --project-dir "$ROOT" 2>&1 | head -n 3
+
+echo
+echo "### Ticket environment (this checkout only; parallel worktrees each get their own)"
+bash "$SCRIPT_DIR/ticket-env.sh" "$ROOT" 2>&1 | grep -E '^(ticket_id|worktree|main_checkout|branch|tmp|port)=' | tr '\n' ' ' | sed 's/ $//'
+echo
 
 echo
 echo "### Verification candidates"
@@ -138,4 +165,7 @@ echo "### Scripts (pass these absolute paths to subagents)"
 echo "route: bash $SCRIPT_DIR/route.sh"
 echo "run-check: bash $SCRIPT_DIR/run-check.sh"
 echo "scan-secrets: bash $SCRIPT_DIR/scan-secrets.sh"
+echo "browser-check: bash $SCRIPT_DIR/browser-check.sh"
+echo "codex-review: bash $SCRIPT_DIR/codex-review.sh"
+echo "ticket-env: bash $SCRIPT_DIR/ticket-env.sh"
 exit 0
