@@ -18,6 +18,11 @@ Written for maintainers. They cover why the workflow is built the way it is, whi
 | Skill and agent directories are watched; new directories need `/reload-skills` or a restart | skills, sub-agents | Installer messages | Docs |
 | Personal skills override project skills; project agents override user agents | skills, sub-agents | Installer warns about dual installs | Docs |
 | `-p` loads the first skill with the rest of the line as arguments; `--output-format json` reports cost and usage | skills, [headless](https://code.claude.com/docs/en/headless) | Smoke test, benchmarking | Live run |
+| `claude --worktree <name>`: `.claude/worktrees/<name>`, branch `worktree-<name>`, base from `worktree.baseRef` (fresh/head), an existing name is reopened, exit prompt keeps work, `--tmux`, `--name`, `--settings <json>`; worktree sessions cannot edit the main checkout | [worktrees](https://code.claude.com/docs/en/worktrees), CLI `--help` | `ticket-worktree.sh` | `--help` of v2.1.314; docs; stub-emulated in test_worktree.sh (no live run yet) |
+| Subagent `tools` accepts `mcp__server__*`; hook matchers are regexes | sub-agents, hooks | Browser verifier may use Claude in Chrome; its guard matches `mcp__.*` | Docs |
+| `CLAUDECODE=1` is set in a session's shell commands | observed | Launcher refuses to start sessions from inside a session | Observed in v2.1.314 |
+| Codex CLI `exec review --commit <sha>` (cannot combine with a custom prompt), `--uncommitted`/`--base` mutually exclusive, `-o`, `--ephemeral`, `--ignore-user-config`, `-c sandbox_mode=...`, `login status`; findings rendered as `- [P1] title — /abs/path:a-b` | `codex exec review --help` 0.164, review prompt strings | `codex-review.sh` | Live run against a synthetic repo: seeded bug found, scope exact, sandbox read-only, repository unchanged |
+| Playwright CLI 0.1.23: `-s=<session>` on every command; `open --config <file>` (an `open` option only) binds the session's `outputDir`, where later default snapshots and screenshots land; `goto/snapshot --filename/click/fill/console/requests/resize/screenshot/close`; headless by default | `playwright-cli --help`, [microsoft/playwright-cli](https://github.com/microsoft/playwright-cli) | Browser verifier commands | Live run (`tests/live.sh`, headless Chromium): open, snapshot, click, resize, screenshot; no files in the repository |
 
 Observed in this version: the native build exposes no `Grep` or `Glob` tools (search goes through Bash). Agents still list `Grep, Glob` so builds that have them can use them; unknown tool names are ignored. Because the explorer therefore needs Bash, read-only behavior is enforced by the guard hook rather than by the tool list alone.
 
@@ -45,6 +50,18 @@ Observed in this version: the native build exposes no `Grep` or `Glob` tools (se
 
 **Independent review only where it pays.** The docs recommend a fresh-context review for long or risky work, and warn that reviewers asked for gaps will usually find some. So `/code-review high` runs only for `REVIEW_ROUTES` (default: complex). Only correctness or requirement findings inside the ticket's own changes count, and fixes go through the implementer within the existing two-round cap. `--fix` is never used, so edits stay behind the implementer's guard.
 
+**Parallel tickets via native worktrees, not a custom engine.** `claude --worktree` already creates, isolates, reopens and safely offers to clean worktrees, so `ticket-worktree.sh` only adds what it lacks: checks before starting (conflicts, missing install, nested sessions), a list/status/diff view from `git worktree list`, and a cleanup that refuses whenever work could be lost. There is no state file: git is the state. Sessions stay interactive because gates and project-agent hooks behave differently under `-p`. A headless multi-ticket runner was rejected for that reason. `--tmux` is passed through to Claude Code's own tmux support instead of scripting tmux.
+
+**Per-checkout identity derived from the path.** `ticket-env.sh` hashes the checkout path into a temp dir, a port and a browser session name. Every script calls it, so nothing needs to be passed between processes, and two worktrees cannot collide by construction. `TICKET_DEV_PORT` overrides the port when a hash collides with something already listening.
+
+**Untracked baseline record.** `git stash create` ignores untracked files, which made "new file by the ticket" and "developer's scratch file" indistinguishable. Preflight now stores `<blob> <path>` lines for pre-existing untracked files as one git blob, without touching the working tree, index or refs. This lets the browser detector and the Codex scope tell them apart, and flag a ticket that edited or deleted one.
+
+**Browser verification as a separate subagent plus a script.** The code verifier stays small and on Haiku. Whether the stage runs is decided by path rules, not by a model. The agent only interacts and reports. `validate-report` deterministically downgrades unsupported claims, and the orchestrator re-runs it instead of trusting the agent. The guard confines URLs to local or approved hosts for both Bash and MCP tools. Defaults to `off` so existing users see no change.
+
+**Codex scope via a synthetic commit.** Codex's targets are `--uncommitted` (includes developer work), `--base` (includes the branch) and `--commit`. A commit `baseline -> baseline + ticket files`, built with a temporary `GIT_INDEX_FILE`, makes `--commit` express exactly the ticket. It creates only unreferenced objects, like `git stash create`. A temporary worktree checkout was considered, but it would write `.git/worktrees` metadata and duplicate the tree for no gain. `--commit` cannot take custom instructions, so Codex's built-in review rubric (prioritized P0-P3 correctness findings) is used, and style-only findings are filtered at validation. `--ignore-user-config` keeps the user's MCP servers out of the review: Codex's sandbox covers files and commands, not MCP tools.
+
+**Cross-provider review needs per-project consent.** Sending code to OpenAI is a data-governance decision per repository, so `CODEX_REVIEW_ROUTES` is ignored outside a project's own config, and `--codex-review` is consent for one ticket. Only one independent reviewer runs per ticket, and Codex at most once, because a second AI pass mostly adds cost and speculative findings.
+
 ## Known limitations
 
 - Gates, retry caps and per-invocation model choice are instructions to the model, not enforced code. The live smoke tests exercise them, but they cannot guarantee them.
@@ -52,6 +69,9 @@ Observed in this version: the native build exposes no `Grep` or `Glob` tools (se
 - Project-level agent hooks require workspace trust and are skipped under `claude -p`.
 - The skill's `allowed-tools` grant ends with the invoking turn, so after a gate you may see permission prompts for the workflow's own scripts in manual mode.
 - Keyword triage is English-only and approximate; it raises flags for review and never lowers risk.
+- The browser and Codex stages, the shared fix-round cap and "Codex at most once" are orchestrator instructions. Detection, scope, URL policy, report validation and the read-only check are scripts.
+- `ticket-worktree.sh` depends on Claude Code's documented `--worktree` layout (`.claude/worktrees/<name>`, `worktree-<name>`). If that changes, `list`, `status`, `diff` and `clean` need updating; `start` keeps working.
+- Codex reads files from disk, so pre-existing edits in other files are visible to it as context. Only the reviewed diff is scoped.
 
 ## Future OpenAI API adapter (not implemented)
 

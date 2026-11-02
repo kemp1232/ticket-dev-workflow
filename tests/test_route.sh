@@ -148,4 +148,31 @@ assert_eq "$(kv independent_review "$out")" "yes" "invalid value keeps the defau
 assert_contains "$(kv warnings "$out")" "ignored invalid REVIEW_ROUTES"
 rm -f "$P/.claude/ticket-dev/routing.conf"
 
+describe "Codex cross-model review: explicit request first, opt-in per project, one reviewer"
+cx() { route --files 9 --modules 4 --uncertainty high --tests good "$@"; }
+out=$(cx)
+assert_eq "$(kv codex_review "$out")/$(kv independent_review "$out")/$(kv review_fallback "$out")" "no/yes/none" "default: Claude review only"
+out=$(route --files 1 --modules 1 --uncertainty none --tests na --codex-review)
+assert_eq "$(kv codex_review "$out")/$(kv independent_review "$out")/$(kv review_fallback "$out")" "requested/no/none" "explicit request on a light ticket, no Claude fallback"
+out=$(cx --codex-review)
+assert_eq "$(kv codex_review "$out")/$(kv independent_review "$out")/$(kv review_fallback "$out")" "requested/no/claude" "Codex replaces Claude review, which stays the fallback"
+mkdir -p "$P/.claude/ticket-dev"
+printf 'CODEX_REVIEW_ROUTES=complex\n' >"$P/.claude/ticket-dev/routing.conf"
+assert_eq "$(kv codex_review "$(cx)")" "configured" "project opt-in"
+assert_eq "$(kv codex_review "$(route --files 3 --modules 1 --uncertainty low --tests good)")" "no" "other routes unaffected"
+out=$(cx --no-codex-review)
+assert_eq "$(kv codex_review "$out")/$(kv independent_review "$out")" "no/yes" "developer declines: Claude review as before"
+assert_contains "$(route --print-config)" "CODEX_REVIEW_ROUTES=complex ($P/.claude/ticket-dev/routing.conf)" "config shows the opt-in source"
+printf 'CODEX_REVIEW_ROUTES=often\n' >"$P/.claude/ticket-dev/routing.conf"
+out=$(cx)
+assert_eq "$(kv codex_review "$out")" "no" "invalid value"
+assert_contains "$(kv warnings "$out")" "ignored invalid CODEX_REVIEW_ROUTES"
+rm -f "$P/.claude/ticket-dev/routing.conf"
+printf 'CODEX_REVIEW_ROUTES=standard,complex\n' >"$TEST_TMP/shared.conf"
+out=$(route --config "$TEST_TMP/shared.conf" --files 9 --modules 4 --uncertainty high --tests good)
+assert_eq "$(kv codex_review "$out")" "no" "a shared/global config cannot opt projects in"
+assert_contains "$(kv warnings "$out")" "must be enabled per project"
+assert_eq "$(sed -n 's/^CODEX_REVIEW_ROUTES=//p' "$SKILL/routing.conf")" "none" "shipped default"
+assert_eq "$(kv browser_verifier_model "$(route --triage --ticket x)")" "sonnet" "browser verifier model from routing.conf"
+
 finish

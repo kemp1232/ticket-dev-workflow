@@ -25,6 +25,16 @@ base=$(printf '%s\n' "$out" | sed -n 's/^baseline: \([0-9a-f]\{40\}\).*/\1/p')
 [ -n "$base" ] && pass || fail "no baseline sha in: $out"
 assert_contains "$out" "snapshot of tracked files"
 
+describe "pre-existing untracked files are recorded without touching the repository"
+rec=$(printf '%s\n' "$out" | sed -n 's/^baseline-untracked: \([0-9a-f]\{40\}\).*/\1/p')
+[ -n "$rec" ] && pass || fail "no untracked record in: $out"
+assert_eq "$(git -C "$r" cat-file blob "$rec")" "$(git -C "$r" hash-object notes.txt) notes.txt" "record content"
+assert_contains "$out" "### Ticket environment"
+assert_contains "$out" "worktree=main"
+assert_contains "$out" "browser: BROWSER_VERIFICATION=off"
+tmpd=$(printf '%s\n' "$out" | sed -n 's/.* tmp=\([^ ]*\) .*/\1/p')
+case "$tmpd" in "$r"*) fail "ticket temp dir inside the repository" ;; "") fail "no ticket tmp" ;; *) pass ;; esac
+
 describe "baseline diff shows only changes made after preflight"
 printf 'two\n' >>"$r/app.txt"
 changed=$(git -C "$r" diff --name-only "$base")
@@ -32,12 +42,32 @@ assert_eq "$changed" "app.txt" "files changed since baseline"
 assert_eq "$(cat "$r/notes.txt")" "scratch" "untracked work intact"
 assert_contains "$(cat "$r/README.md")" "local edit" "tracked work intact"
 
+describe "changed-files lists the ticket's own changes only"
+printf 'new\n' >"$r/ticket-new.txt"
+ch=$(bash "$SCRIPTS/ticket-env.sh" --changed-files --baseline "$base" --untracked-at-baseline "$rec" "$r")
+assert_contains "$ch" "changed app.txt"
+assert_contains "$ch" "new ticket-new.txt"
+assert_not_contains "$ch" "notes.txt" "pre-existing untracked"
+assert_not_contains "$ch" "README.md" "pre-existing tracked edit"
+printf 'more\n' >>"$r/notes.txt"
+assert_contains "$(bash "$SCRIPTS/ticket-env.sh" --changed-files --baseline "$base" --untracked-at-baseline "$rec" "$r")" "gap modified-preexisting-untracked notes.txt"
+rm "$r/notes.txt"
+assert_contains "$(bash "$SCRIPTS/ticket-env.sh" --changed-files --baseline "$base" --untracked-at-baseline "$rec" "$r")" "gap deleted-preexisting-untracked notes.txt"
+printf 'scratch\n' >"$r/notes.txt"
+rm "$r/ticket-new.txt"
+fp=$(bash "$SCRIPTS/ticket-env.sh" --fingerprint "$r")
+assert_eq "$(bash "$SCRIPTS/ticket-env.sh" --fingerprint "$r")" "$fp" "fingerprint is stable"
+printf 'x' >>"$r/notes.txt"
+[ "$(bash "$SCRIPTS/ticket-env.sh" --fingerprint "$r")" != "$fp" ] && pass || fail "fingerprint missed an untracked edit"
+printf 'scratch\n' >"$r/notes.txt"
+
 describe "clean repository uses HEAD as baseline"
 c="$TEST_TMP/clean"
 new_repo "$c"
 out=$(pre "$c")
 assert_contains "$out" "baseline: $(git -C "$c" rev-parse HEAD) (HEAD"
 assert_contains "$out" "pre-existing changes: none"
+assert_contains "$out" "baseline-untracked: none"
 
 describe "repository without commits and non-git directories still succeed"
 e="$TEST_TMP/nocommit"

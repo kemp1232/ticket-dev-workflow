@@ -1,7 +1,7 @@
 ---
 name: ticket-dev
-description: Take a development ticket from description to a verified change in the current repository. Explores the code, rates complexity and risk, routes implementation to a haiku, sonnet or opus subagent, runs the repository's own checks and reports with evidence. Usage /ticket-dev <ticket> [@path ...] [--plan-only] [--model <alias>] [--gpt]
-argument-hint: "<ticket> [@path ...] [--plan-only] [--model haiku|sonnet|opus] [--gpt]"
+description: Take a development ticket from description to a verified change in the current repository. Explores the code, rates complexity and risk, routes implementation to a haiku, sonnet or opus subagent, runs the repository's own checks, optionally verifies UI changes in a browser and gets a Codex cross-model review, and reports with evidence. Usage /ticket-dev <ticket> [@path ...] [--plan-only] [--model <alias>] [--gpt] [--browser|--no-browser] [--codex-review|--no-codex-review]
+argument-hint: "<ticket> [@path ...] [--plan-only] [--model haiku|sonnet|opus] [--gpt] [--browser|--no-browser] [--codex-review|--no-codex-review]"
 disable-model-invocation: true
 allowed-tools:
   - Bash(bash ${CLAUDE_SKILL_DIR}/scripts/*)
@@ -21,6 +21,8 @@ allowed-tools:
 
 If the preflight above is empty, failed, or says shell execution is disabled, run `bash ${CLAUDE_SKILL_DIR}/scripts/preflight.sh` yourself before anything else. Below, `<route>` means `bash ${CLAUDE_SKILL_DIR}/scripts/route.sh`. `scan-secrets.sh` is only for a GPT review package, never for code or diffs.
 
+If preflight shows `worktree=linked`, this session is one of several parallel ticket sessions: work only in this checkout, and use its own `tmp` and `port`. Never start, resume or clean worktrees yourself; that is the developer's `ticket-worktree.sh`.
+
 ## Rules that always apply
 
 1. **No irreversible or shared-state actions.** Never push, commit, merge, deploy, publish, apply migrations, run destructive data operations, read or change credentials/secret files, or delete files outside the ticket's scope. If the ticket needs one, stop at a gate and let the developer do it or approve it.
@@ -37,6 +39,8 @@ If the preflight above is empty, failed, or says shell execution is disabled, ru
 - `--plan-only`: stop after step 5 and edit nothing.
 - `--model <alias>`: developer override for the implementation model; pass it to route.sh.
 - `--gpt`: the developer wants a GPT review package; pass `--gpt` to route.sh.
+- `--browser` / `--no-browser`: force or skip browser verification for this ticket (step 7).
+- `--codex-review` / `--no-codex-review`: request or decline the Codex cross-model review; pass it to route.sh.
 - `@path` tokens are starting hints, not the full scope. The remaining text is the ticket.
 - No ticket text: ask for it and stop. Not a git repository: say so and get confirmation before step 6.
 
@@ -52,7 +56,7 @@ Read [references/routing-policy.md](references/routing-policy.md) for the input 
 
 ```
 <route> --files N --modules N --uncertainty none|low|high --tests good|partial|none|na \
-  [--signals a,b] [--dismiss "flag:reason"]... [--decisions N] [--new-pattern] [--model X] [--gpt] \
+  [--signals a,b] [--dismiss "flag:reason"]... [--decisions N] [--new-pattern] [--model X] [--gpt] [--codex-review|--no-codex-review] \
   --ticket-stdin <<'TICKET'
 <ticket text>
 TICKET
@@ -87,22 +91,30 @@ Delegate to the `ticket-dev-verifier` subagent with `model` = `verifier_model`. 
 - `standard`: targeted, typecheck and lint.
 - `broad`: standard, the full test suite and the build (plus race tests for Go concurrency).
 
-On `VERDICT: FAIL`, send the failure details to the implementer (resume it, or start a new one with the contract and current diff). At most two fix rounds per ticket; then escalate per step 6 or stop and report.
+On `VERDICT: FAIL`, send the failure details to the implementer (resume it, or start a new one with the contract and current diff). At most two fix rounds per ticket, counting verifier, browser and review findings together; then escalate per step 6 or stop and report.
+
+**Browser.** After the verifier passes, run `<browser-check> detect` as described in [references/browser-verification.md](references/browser-verification.md). It decides from the changed files and `browser.conf`; follow that file only when it prints `decision=run`.
 
 ### 8. Review the diff yourself
 Run `git diff --stat <baseline>` and compare `git status --short` with the preflight list. Read only hunks the verifier flagged, hunks behind an UNVERIFIED criterion, and risky code. Confirm each acceptance criterion, nothing out of scope changed, pre-existing changes are intact, and no debug leftovers remain.
 
-If `independent_review=yes` and the verifier passed, invoke the `code-review` skill with the argument `high` for a fresh-context review (never `--fix`, `--comment` or `ultra`). It reviews the whole working-tree diff, so discard findings outside the ticket's changes (`git diff <baseline>`). Send real correctness or requirement gaps to the implementer as a fix round (it counts toward the limit of two) and verify again; put the rest under Risks. If the skill is unavailable, say so in the report.
+**Independent review: at most one reviewer.** Once checks pass:
+- `codex_review=requested` or `configured`: follow [references/codex-review.md](references/codex-review.md). Run Codex at most once per ticket and validate every finding before acting. If Codex cannot run, use the Claude review below only when `review_fallback=claude`, and label it as Claude's review.
+- Otherwise, if `independent_review=yes`, invoke the `code-review` skill with the argument `high` for a fresh-context review (never `--fix`, `--comment` or `ultra`). It reviews the whole working-tree diff, so discard findings outside the ticket's changes (`git diff <baseline>`). Send real correctness or requirement gaps to the implementer as a fix round (it counts toward the limit of two) and verify again; put the rest under Risks. If the skill is unavailable, say so in the report.
 
 ### 9. Report
 A developer reviews every change after you. The review checklist must let them double-check each acceptance criterion quickly: name the specific test that checks it (`file:line` and the test's exact name, from the verifier and implementer reports) and a command that re-runs only that test. If no test covers a criterion, say so and point to the diff lines to read.
 
 ```
 ## /ticket-dev: DONE | PARTIAL | BLOCKED | PLAN ONLY
+Ticket: <id or one-line summary>. Worktree: <path> on <branch> | main checkout
 Routing: complexity C, risk R -> route (model): reason. Escalations: none | ...
 Changes: file - what changed (from git diff --stat <baseline>)
 Checks: verbatim [PASS]/[FAIL]/[SKIP]/[TIMEOUT] lines; not run: name - why
-Independent review: not required | N findings, M fixed, rest under Risks | unavailable
+Browser verification: PASS | FAIL | INCOMPLETE | SKIP - reason; journeys passed/failed; E2E line; artifacts dir
+Independent review: not required | Claude: N findings, M fixed, rest under Risks | unavailable
+Cross-model review: not requested | Codex PASS | FINDINGS (n: x VERIFIED, y fixed) | INCOMPLETE | SKIP - reason
+Fix rounds: 0-2, what each fixed
 Review checklist:
 | AC | Status | Checked by | Re-run only this |
 |----|--------|------------|------------------|
@@ -111,5 +123,5 @@ Review checklist:
 Not covered by automated tests (check by hand): ... | none
 Assumptions: ...
 Risks and follow-ups: ...
-Next: review `git diff <baseline>` and commit when satisfied; /clear before an unrelated ticket.
+Next: review `git diff <baseline>` and commit when satisfied; /clear before an unrelated ticket. In a ticket worktree: commit on its branch, then `ticket-worktree.sh diff|clean <name>` from your terminal.
 ```

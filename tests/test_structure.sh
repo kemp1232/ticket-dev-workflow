@@ -43,7 +43,7 @@ assert_contains "$(cat "$AGENTS/ticket-dev-verifier.md")" "a command that runs o
 assert_contains "$(cat "$AGENTS/ticket-dev-implementer.md")" "acceptance criterion it covers" "implementer test mapping"
 
 describe "agents are well-formed"
-for name in ticket-dev-explorer ticket-dev-implementer ticket-dev-verifier; do
+for name in ticket-dev-explorer ticket-dev-implementer ticket-dev-verifier ticket-dev-browser-verifier; do
 	f="$AGENTS/$name.md"
 	assert_file "$f"
 	assert_eq "$(field "$f" name)" "$name" "$name name"
@@ -60,12 +60,18 @@ assert_contains "$(field "$AGENTS/ticket-dev-implementer.md" tools)" "Edit" "imp
 assert_contains "$(frontmatter "$AGENTS/ticket-dev-explorer.md")" 'bash "$g" explore' "explorer guard mode"
 assert_contains "$(frontmatter "$AGENTS/ticket-dev-verifier.md")" 'bash "$g" verify' "verifier guard mode"
 assert_contains "$(frontmatter "$AGENTS/ticket-dev-implementer.md")" 'bash "$g" implement' "implementer guard mode"
+BV="$AGENTS/ticket-dev-browser-verifier.md"
+assert_not_contains "$(field "$BV" tools)" "Edit" "browser verifier tools"
+assert_not_contains "$(field "$BV" tools)" "Write" "browser verifier tools"
+assert_contains "$(frontmatter "$BV")" 'bash "$g" browser' "browser verifier guard mode"
+assert_contains "$(frontmatter "$BV")" 'mcp__.*' "guard also sees MCP browser tools"
 
 describe "agent default models match routing.conf (one source of truth)"
 conf() { sed -n "s/^$1=//p" "$SKILL/routing.conf"; }
 assert_eq "$(field "$AGENTS/ticket-dev-explorer.md" model)" "$(conf MODEL_EXPLORER)" "explorer default"
 assert_eq "$(field "$AGENTS/ticket-dev-verifier.md" model)" "$(conf MODEL_VERIFIER)" "verifier default"
 assert_eq "$(field "$AGENTS/ticket-dev-implementer.md" model)" "$(conf MODEL_STANDARD)" "implementer default"
+assert_eq "$(field "$AGENTS/ticket-dev-browser-verifier.md" model)" "$(conf MODEL_BROWSER_VERIFIER)" "browser verifier default"
 # Workflow instructions name config keys, never concrete models.
 assert_eq "$(grep -cE 'model[` ]*(=|:) *`?(haiku|sonnet|opus)' "$SK")" "0" "SKILL.md hardcodes no model"
 assert_eq "$(grep -rlE 'claude-(opus|sonnet|haiku)-[0-9]' "$SKILL" "$AGENTS" | wc -l | tr -d ' ')" "0" "no pinned model IDs"
@@ -90,6 +96,24 @@ assert_contains "$(cat "$SK")" "independent_review=yes" "review step"
 assert_contains "$(cat "$SK")" "never \`--fix\`" "review never edits on its own"
 assert_contains "$(cat "$SK")" "project rules" "rules are not copied"
 assert_eq "$(sed -n 's/^REVIEW_ROUTES=//p' "$SKILL/routing.conf")" "complex" "review default"
+
+describe "optional stages: off by default, bounded, one reviewer, detail in references"
+hint=$(field "$SK" argument-hint)
+for f in --browser --no-browser --codex-review --no-codex-review; do assert_contains "$hint" "$f" "argument-hint"; done
+assert_contains "$(cat "$SK")" "references/browser-verification.md" "browser reference linked"
+assert_contains "$(cat "$SK")" "references/codex-review.md" "codex reference linked"
+assert_contains "$(cat "$SK")" "at most one reviewer" "no stacked reviewers"
+assert_contains "$(cat "$SK")" "Run Codex at most once per ticket" "no review loop"
+assert_contains "$(cat "$SK")" "counting verifier, browser and review findings together" "shared fix-round cap"
+assert_contains "$(cat "$SK")" "review_fallback=claude" "fallback only when allowed"
+assert_contains "$(cat "$SKILL/references/codex-review.md")" "Never present it as a Codex result" "no mislabeled review"
+assert_contains "$(cat "$SKILL/references/codex-review.md")" "do not auto-fix" "security findings escalate"
+assert_contains "$(cat "$SKILL/references/browser-verification.md")" "Never decide by reading code" "deterministic decision"
+assert_contains "$(cat "$SKILL/references/browser-verification.md")" "cannot be reported as a clean DONE" "required mode"
+assert_eq "$(sed -n 's/^BROWSER_VERIFICATION=//p' "$SKILL/browser.conf")" "off" "browser default"
+for s in ticket-env browser-check codex-review; do
+	assert_contains "$(cat "$SCRIPTS/preflight.sh")" "$s: bash" "preflight lists $s"
+done
 
 describe "gates and waiting rules found in live runs"
 assert_contains "$(cat "$SK")" "after the developer has seen the plan" "plan approval needs the plan"

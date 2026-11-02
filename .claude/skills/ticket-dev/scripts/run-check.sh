@@ -13,12 +13,13 @@
 # Full output is kept in a log file outside the repository.
 #
 # Exit codes: 0 PASS, 1 FAIL, 3 SKIP, 4 TIMEOUT, 2 usage error.
-# Env: TICKET_DEV_CHECK_TIMEOUT (seconds, default 540), TICKET_DEV_LOG_DIR.
+# Env: TICKET_DEV_CHECK_TIMEOUT (seconds, default 540), TICKET_DEV_LOG_DIR
+# (default: <ticket temp dir>/checks, see ticket-env.sh).
 
 set -u
 
 usage() {
-	sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 }
 
@@ -44,6 +45,11 @@ fi
 # First real word of the command (skipping VAR=value prefixes), for "not installed" detection.
 FIRST=$(printf '%s\n' "$DISPLAY" | awk '{ for (i = 1; i <= NF; i++) if ($i !~ /^[A-Za-z_][A-Za-z0-9_]*=/) { print $i; exit } }')
 
+# Default: the ticket's private temp dir, so parallel worktrees never mix their logs.
+if [ -z "${TICKET_DEV_LOG_DIR:-}" ]; then
+	tdir=$(bash "$(dirname "$0")/ticket-env.sh" 2>/dev/null | sed -n 's/^tmp=//p')
+	TICKET_DEV_LOG_DIR=${tdir:+$tdir/checks}
+fi
 LOG_DIR=${TICKET_DEV_LOG_DIR:-${TMPDIR:-/tmp}/ticket-dev-checks}
 mkdir -p "$LOG_DIR" 2>/dev/null || LOG_DIR=${TMPDIR:-/tmp}
 LOG="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-$$-$NAME.log"

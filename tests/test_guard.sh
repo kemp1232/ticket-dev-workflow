@@ -63,6 +63,51 @@ for c in 'npx eslint --fix src' 'prettier --write .' 'npm test -- -u' 'npx vites
 	deny verify "$c"
 done
 
+describe "all agent modes: no nested sessions, cross-provider review or worktree management"
+for m in implement verify browser; do
+	for c in 'claude -p "/ticket-dev x"' 'codex exec review --uncommitted' 'npx codex review' \
+		'bash /home/u/.claude/skills/ticket-dev/scripts/codex-review.sh --baseline abc' \
+		'bash .claude/skills/ticket-dev/scripts/ticket-worktree.sh clean feat' 'npx playwright install chromium' \
+		'playwright-cli install --skills'; do
+		deny "$m" "$c"
+	done
+done
+allow implement 'grep -rn "claude" src'
+allow implement 'npm test -- codex'
+
+describe "browser: local app checks pass"
+for c in 'bash /x/browser-check.sh env' 'bash /x/browser-check.sh server start' \
+	'playwright-cli -s=td-a open --config /tmp/td/browser/playwright-cli.json http://127.0.0.1:3142/products' \
+	'playwright-cli -s=td-a snapshot --filename=/tmp/td/browser/j1.yml' \
+	'playwright-cli -s=td-a click e12' 'playwright-cli -s=td-a resize 390 844' 'playwright-cli -s=td-a console error' \
+	'curl -s -o /dev/null -w "%{http_code}" http://localhost:3142/' 'bash /x/run-check.sh e2e -- "npx playwright test --reporter=line"' \
+	'git status --porcelain' 'echo see https://docs.example.com for details' \
+	'playwright-cli -s=td-a goto http://app.localhost:3000/'; do
+	allow browser "$c"
+done
+
+describe "browser: production URLs, unmanaged servers, repo artifacts and edits are blocked"
+for c in 'playwright-cli -s=td-a open --config /tmp/c.json https://shop.example.com' \
+	'playwright-cli -s=td-a goto --url=https://admin.example.com' \
+	'playwright-cli -s=td-a open http://127.0.0.1:3142' 'npx playwright-cli snapshot' 'playwright-cli click e3' \
+	'playwright-cli -s=td-a attach' 'playwright-cli -s=td-a open --config /tmp/c.json --persistent http://localhost:3000' \
+	'playwright-cli -s=td-a open --config /tmp/c.json --profile ~/.config/google-chrome http://localhost:3000' \
+	'curl https://api.example.com/v1/orders' 'wget http://10.0.0.8/' 'npm run dev' 'pnpm dev' 'next dev -p 3000' \
+	'kill 1234' 'rm -rf .next' 'echo x > src/app.tsx' 'git checkout -- src' 'npx playwright test -u' 'npm install'; do
+	deny browser "$c"
+done
+bash "$G" browser --edit src/app.tsx 2>/dev/null && fail "browser verifier edited" || pass
+bash "$G" browser --url https://bank.example.com 2>/dev/null && fail "MCP navigation to production" || pass
+bash "$G" browser --url http://localhost:3000/cart && pass || fail "MCP navigation to localhost"
+J='{"tool_name":"mcp__claude-in-chrome__navigate","tool_input":{"url":"https://prod.example.com","tabId":1}}'
+printf '%s' "$J" | bash "$G" browser 2>/dev/null && fail "jq path allowed MCP navigation" || pass
+printf '%s' "$J" | TICKET_DEV_GUARD_NO_JQ=1 bash "$G" browser 2>/dev/null && fail "fallback path allowed MCP navigation" || pass
+printf '%s' "$J" | bash "$G" implement && pass || fail "MCP check is browser-mode only"
+REPORT=$(printf "bash /x/browser-check.sh save-report --required <<'EOF'\nBROWSER VERIFICATION: FAIL\n- requests to https://api.example.com > 0 failed (rm -rf noted)\nEOF")
+allow browser "$REPORT"
+deny browser "$(printf "bash /x/browser-check.sh save-report <<'EOF'; git push\nx\nEOF")"
+deny implement "$(printf "bash <<'EOF'\ngit push\nEOF")"
+
 describe "file tools: secrets and read-only roles"
 bash "$G" implement --edit src/a.ts && pass || fail "implementer edits source"
 bash "$G" implement --edit config/.env.example && pass || fail "implementer edits .env.example"
@@ -92,7 +137,7 @@ mkdir -p "$proj/.claude/skills/ticket-dev"
 cp -R "$SCRIPTS" "$proj/.claude/skills/ticket-dev/scripts"
 PUSH='{"tool_name":"Bash","tool_input":{"command":"git push"}}'
 LS='{"tool_name":"Bash","tool_input":{"command":"ls src"}}'
-for a in ticket-dev-explorer ticket-dev-implementer ticket-dev-verifier; do
+for a in ticket-dev-explorer ticket-dev-implementer ticket-dev-verifier ticket-dev-browser-verifier; do
 	cmd=$(hook_cmd "$a")
 	printf '%s' "$PUSH" | CLAUDE_PROJECT_DIR="$proj" sh -c "$cmd" 2>/dev/null
 	assert_eq "$?" "2" "$a blocks git push via its hook"
