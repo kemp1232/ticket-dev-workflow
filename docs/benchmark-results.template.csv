@@ -1,0 +1,2 @@
+date,ticket_id,level,configuration,run,first_pass_success,duration_ms,total_cost_usd,usage_basis,implementer_invocations,verifier_fix_rounds,human_corrections,checks_pass,checks_fail,checks_skip,full_suite_after,regression_risk_0_2,notes
+2026-10-20,T1,LOW,default,1,,,,list-price estimate (subscription),,,,,,,,,

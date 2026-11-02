@@ -1,0 +1,24 @@
+# Ticket keywords that raise a risk flag during triage.
+#
+# Format:  flag: keyword, keyword, stem*
+#   keyword   matches the whole word or phrase (case-insensitive)
+#   stem*     matches any word starting with the stem
+#
+# A raised flag is not a verdict. The orchestrator must either confirm it as a
+# signal (--signals) or dismiss it with a reason (--dismiss "flag:reason").
+# Flags left unaddressed are treated as confirmed, so a risky ticket cannot be
+# downgraded silently. Flags must be names route.sh knows (see route.sh --help).
+
+auth: auth, authent*, authoriz*, login, logout, log in, sign in, signin, sign up, signup, password*, session*, jwt, oauth*, sso, saml, permission*, rbac, acl, access token*, refresh token*, bearer, 2fa, mfa
+security: security, vulnerab*, xss, csrf, ssrf, injection, sanitiz*, encrypt*, decrypt*, crypto*, hashing, password hash*, cors, csp, cve*
+secrets: secret*, credential*, api key*, apikey*, private key*, env var*, environment variable*, dotenv, vault, kms
+migration: migration*, migrate*, schema, alter table, add column, drop column, new table, new column, backfill*, add index*, database index*, ddl
+data-loss: delete*, deletion*, purge*, truncat*, drop table*, drop database*, destroy*, wipe*, erase*, bulk update*, hard delete*, cascade*, overwrite*
+payments: payment*, billing, invoice*, stripe, paypal, braintree, adyen, checkout, refund*, charge*, subscription*, pricing, tax, taxes
+irreversible: irreversible, cannot be undone, one way, permanent*, production data
+infra: deploy*, ci, cd, pipeline*, terraform, kubernetes, k8s, helm, dockerfile, docker compose, nginx, dns, infrastructure, cron*, github actions, workflow file*
+public-api: api, apis, endpoint*, graphql, rest api*, restful, openapi, swagger, breaking change*, backward*, versioning, sdk, response format, response shape, api contract*
+external-integration: integrate*, integration with, third party integration*, webhook*, third party, 3rd party, external service*, external api*, vendor*, partner api*, oauth provider*, smtp, sendgrid, twilio, s3, queue*, kafka, rabbitmq, sqs, pubsub
+concurrency: concurren*, race condition*, parallel*, lock, locks, locking, mutex*, deadlock*, transaction*, idempoten*, retry*, retries, goroutine*, async job*, worker*
+pii: pii, personal data, gdpr, ccpa, hipaa, audit*, profile*, email address*, phone number*, street address*, postal address*, mailing address*, date of birth, ssn
+performance: performance, latency, slow, optimi*, n 1, caching, cache*, throughput, memory leak*, timeout*

@@ -1,0 +1,11 @@
+{
+  "name": "sample-products-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny fixture API used by the ticket-dev smoke test. No dependencies.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

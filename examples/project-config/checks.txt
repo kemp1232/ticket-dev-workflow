@@ -1,0 +1,10 @@
+# Verification commands for /ticket-dev. Copy to <repo>/.claude/ticket-dev/checks.txt.
+# When this file exists it replaces auto-detection entirely.
+#   name: command                 a whole-project check
+#   targeted-name: template       a narrower form; <path> and <name> are filled in per ticket
+typecheck: pnpm -C apps/api exec tsc --noEmit
+lint: pnpm -C apps/api exec eslint src
+test: pnpm -C apps/api test
+build: pnpm -C apps/api build
+targeted-test: pnpm -C apps/api exec vitest run <path>
+targeted-lint: pnpm -C apps/api exec eslint <path>
