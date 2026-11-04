@@ -11,7 +11,7 @@
 
 Three optional additions, each off unless you ask for it:
 
-- **Parallel tickets:** each ticket runs in its own git worktree and Claude Code session (`ticket-worktree.sh`, built on `claude --worktree`).
+- **Parallel tickets:** each ticket runs in its own git worktree and Claude Code session. Run `/ticket-dev` in a new chat while another ticket is running, and it moves itself into a new worktree from the branch you choose. From a terminal, use `ticket-worktree.sh`, built on `claude --worktree`.
 - **Browser verification:** a subagent drives your locally running web app to check UI behavior (Playwright CLI or Claude in Chrome).
 - **Cross-model review:** OpenAI's Codex CLI reviews exactly the ticket's changes, read-only, using your ChatGPT sign-in.
 
@@ -145,7 +145,7 @@ The design uses native Claude Code features only: a skill, three custom subagent
 | `guard.sh` | `scripts/` | `PreToolUse` hook that keeps each subagent in its role (see [Safety](#safety)). |
 | `scan-secrets.sh` | `scripts/` | Checks a GPT review package for credentials and personal data before you copy it. |
 | `ticket-env.sh` | `scripts/` | Per-checkout identity: private temp dir, port and log dir, so parallel worktrees never collide. Also lists the ticket's own changes against the baseline, and fingerprints the repository to prove read-only steps changed nothing. |
-| `ticket-worktree.sh` | `scripts/` | Your terminal launcher for parallel tickets: a thin layer over `claude --worktree` with conflict checks, status, diff and a cleanup that never deletes work. |
+| `ticket-worktree.sh` | `scripts/` | Parallel tickets. For you, in a terminal: a launcher over `claude --worktree` with conflict checks, status, diff, and a cleanup that never deletes work. For the orchestrator: records which session owns a checkout, and creates a worktree from a chosen base branch. |
 | `browser-check.sh` + `browser.conf` | `scripts/`, skill root | Decides from changed files whether browser verification applies, finds tools, runs the project's dev server per ticket, and rejects reports that claim more than they show. |
 | `codex-review.sh` | `scripts/` | Runs `codex exec review` read-only on a synthetic commit that contains exactly the ticket's changes, and normalizes the findings. |
 | `ticket-dev-browser-verifier` | `.claude/agents/` | Optional. Interacts with the running app and reports observed behavior with evidence files. Never edits; its guard allows only approved local URLs. |
@@ -302,6 +302,30 @@ A possible future OpenAI API adapter is sketched in [docs/design-notes.md](docs/
 ## Parallel tickets in worktrees
 
 Each ticket runs in its own [git worktree](https://code.claude.com/docs/en/worktrees) (its own directory and branch) with its own interactive Claude Code session and its own `/ticket-dev` run, including the approval gates and checks. Parallelism happens across tickets; each ticket still has one implementer. Start with **two tickets at a time**. Add more only if your machine (test suites, dev servers) and your review capacity keep up.
+
+### From a chat (VS Code or terminal): automatic
+
+1. Ticket 1 is running in chat A.
+2. Open a new chat B and type `/ticket-dev <ticket 2>` as usual.
+3. Preflight sees that chat A's session still owns this checkout (`checkout=busy`), so chat B asks whether to use a new worktree, take over this checkout (if chat A has finished), or cancel. With a new worktree, chat B:
+   1. asks which branch the worktree should start from, offering your remote's default branch, `staging`, `develop` and so on, and whether to save it as the default. With a saved default, it doesn't ask;
+   2. fetches that branch and creates `.claude/worktrees/<name>` on a new branch `worktree-<name>`, with no upstream, so a stray `git push` cannot hit `staging`;
+   3. copies the git-ignored files that `.worktreeinclude` lists, such as `.env`;
+   4. moves chat B into the worktree with Claude Code's `EnterWorktree` tool;
+   5. runs the repository's lockfile install, such as `npm ci`, plus one per subdirectory with its own lockfile (for example `server/`);
+   6. re-runs preflight there and continues with the normal workflow. If a dev server (Expo, Metro, Vite, Next...) is still running from the main checkout, chat B warns you, and the report repeats it: that server keeps showing the old code.
+
+| Flag | Effect |
+|---|---|
+| `--base <branch>` | Use this base and skip the questions; implies a new worktree |
+| `--worktree` | New worktree without asking, even if nobody else is running a ticket here |
+| `--here` | Stay in this checkout without asking, even though it is busy; both chats then edit the same files |
+
+- **Default base:** stored per repository in local git config, never committed. Change it with `git config ticket-dev.worktreeBase main`, or clear it with `git config --unset ticket-dev.worktreeBase`.
+- **How "busy" works:** when `/ticket-dev` starts, it records its session ID and Claude Code process in the checkout's git directory (`.git/ticket-dev-session`, or the worktree's own git dir). The ticket releases it whenever it stops (report, BLOCKED, plan only, a gate that waits for you). Otherwise the record counts only while that process runs *and* the session's transcript changed in the last 30 minutes (`TICKET_DEV_CLAIM_IDLE_MINUTES`). The IDE extension keeps its process alive after a chat ends, so the process alone proves nothing. A single chat behaves exactly as before.
+- **When you're done:** commit in the worktree chat, close it, then use `ticket-worktree diff|clean <name>` from a terminal. `clean` refuses while a chat still owns the worktree.
+
+### From a terminal
 
 The launcher is installed with the skill. Give it a short name:
 

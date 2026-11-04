@@ -1,7 +1,7 @@
 ---
 name: ticket-dev
-description: Take a development ticket from description to a verified change in the current repository. Explores the code, rates complexity and risk, routes implementation to a haiku, sonnet or opus subagent, runs the repository's own checks, optionally verifies UI changes in a browser and gets a Codex cross-model review, and reports with evidence. Usage /ticket-dev <ticket> [@path ...] [--plan-only] [--model <alias>] [--gpt] [--browser|--no-browser] [--codex-review|--no-codex-review]
-argument-hint: "<ticket> [@path ...] [--plan-only] [--model haiku|sonnet|opus] [--gpt] [--browser|--no-browser] [--codex-review|--no-codex-review]"
+description: Take a development ticket from description to a verified change in the current repository. Explores the code, rates complexity and risk, routes implementation to a haiku, sonnet or opus subagent, runs the repository's own checks, optionally verifies UI changes in a browser and gets a Codex cross-model review, and reports with evidence. Usage /ticket-dev <ticket> [@path ...] [--plan-only] [--model <alias>] [--worktree] [--base <branch>] [--here] [--gpt] [--browser|--no-browser] [--codex-review|--no-codex-review]
+argument-hint: "<ticket> [@path ...] [--plan-only] [--model haiku|sonnet|opus] [--worktree] [--base <branch>] [--here] [--gpt] [--browser|--no-browser] [--codex-review|--no-codex-review]"
 disable-model-invocation: true
 allowed-tools:
   - Bash(bash ${CLAUDE_SKILL_DIR}/scripts/*)
@@ -17,11 +17,18 @@ allowed-tools:
 
 ## Preflight (deterministic, already run)
 
-!`bash ${CLAUDE_SKILL_DIR}/scripts/preflight.sh`
+!`bash ${CLAUDE_SKILL_DIR}/scripts/preflight.sh --session ${CLAUDE_SESSION_ID}`
 
-If the preflight above is empty, failed, or says shell execution is disabled, run `bash ${CLAUDE_SKILL_DIR}/scripts/preflight.sh` yourself before anything else. Below, `<route>` means `bash ${CLAUDE_SKILL_DIR}/scripts/route.sh`. `scan-secrets.sh` is only for a GPT review package, never for code or diffs.
+If the preflight above is empty, failed, or says shell execution is disabled, run `bash ${CLAUDE_SKILL_DIR}/scripts/preflight.sh --session ${CLAUDE_SESSION_ID}` yourself before anything else. Below, `<route>` means `bash ${CLAUDE_SKILL_DIR}/scripts/route.sh`, `<ticket-worktree>` means `bash ${CLAUDE_SKILL_DIR}/scripts/ticket-worktree.sh`, and `<session>` is preflight's `session=` value. `scan-secrets.sh` is only for a GPT review package, never for code or diffs.
 
-If preflight shows `worktree=linked`, this session is one of several parallel ticket sessions: work only in this checkout, and use its own `tmp` and `port`. Never start, resume or clean worktrees yourself; that is the developer's `ticket-worktree.sh`.
+**Checkout.** Decide before step 2:
+- `--worktree` or `--base` given (and not `--here`): move this session into a new worktree per [references/worktree-handoff.md](references/worktree-handoff.md).
+- `checkout=busy` without any of these flags: ask with AskUserQuestion (header `Checkout`), naming the `holder=` session and its claim time: "Another chat claimed this checkout (session <id>, since <time>). Where should this ticket run?" Options: "New worktree" (separate folder and branch; a dev server running here will not show the change), "Take over this checkout" (if that chat has finished), "Cancel". Worktree: follow the handoff. Take over: run `<ticket-worktree> claim --session <session> --force`. Cancel: stop. Without AskUserQuestion, ask in plain text and stop.
+- `--here` on a busy checkout: take over without asking, and say that both sessions may now edit the same files.
+
+In a worktree (`worktree=linked`) work only in that checkout and use its own `tmp` and `port`. Never resume, clean or remove worktrees: those are the developer's `ticket-worktree.sh` commands.
+
+**Release.** Whenever this ticket stops (the step 9 report, BLOCKED, PLAN ONLY, any gate that waits for the developer, or Cancel), run `<ticket-worktree> release --session <session>` first, so a finished chat never makes the next ticket look busy. When the developer says `proceed` after a stop, run `<ticket-worktree> claim --session <session>` again; if it prints `checkout=busy`, tell the developer which session holds it before you edit anything.
 
 ## Rules that always apply
 
@@ -41,6 +48,7 @@ If preflight shows `worktree=linked`, this session is one of several parallel ti
 - `--gpt`: the developer wants a GPT review package; pass `--gpt` to route.sh.
 - `--browser` / `--no-browser`: force or skip browser verification for this ticket (step 7).
 - `--codex-review` / `--no-codex-review`: request or decline the Codex cross-model review; pass it to route.sh.
+- `--worktree`, `--base <branch>`, `--here`: where the ticket runs; see **Checkout** above.
 - `@path` tokens are starting hints, not the full scope. The remaining text is the ticket.
 - No ticket text: ask for it and stop. Not a git repository: say so and get confirmation before step 6.
 
@@ -86,7 +94,7 @@ Act on its STATUS:
 - `ESCALATE`: re-run route.sh with the new evidence and announce the change. Move up at most one route automatically (light, standard, complex); a new HIGH risk goes through the approval gate. If the escalated attempt also fails, stop and report.
 
 ### 7. Verify
-Delegate to the `ticket-dev-verifier` subagent with `model` = `verifier_model`. Give it: the baseline, the pre-existing changes, the acceptance criteria, the expected affected paths, the run-check path, and concrete commands for the `verification` level (fill the preflight templates with real paths):
+Delegate to the `ticket-dev-verifier` subagent with `model` = `verifier_model`. Give it: the baseline, the pre-existing changes, the acceptance criteria, the expected affected paths, the run-check path, preflight's `tmp` as its scratch dir, and concrete commands for the `verification` level (fill the preflight templates with real paths):
 - `targeted`: tests for the touched code, plus typecheck if it is fast.
 - `standard`: targeted, typecheck and lint.
 - `broad`: standard, the full test suite and the build (plus race tests for Go concurrency).
@@ -108,6 +116,7 @@ A developer reviews every change after you. The review checklist must let them d
 ```
 ## /ticket-dev: DONE | PARTIAL | BLOCKED | PLAN ONLY
 Ticket: <id or one-line summary>. Worktree: <path> on <branch> | main checkout
+Dev server: (worktree only, when preflight listed a `dev_server=` in the main checkout) WARNING: <command> serves <main checkout>, not this worktree, so it still shows the old code. Restart it from <worktree path>, or apply `git -C <worktree> diff <baseline>` to the main checkout.
 Routing: complexity C, risk R -> route (model): reason. Escalations: none | ...
 Changes: file - what changed (from git diff --stat <baseline>)
 Checks: verbatim [PASS]/[FAIL]/[SKIP]/[TIMEOUT] lines; not run: name - why
@@ -123,5 +132,5 @@ Review checklist:
 Not covered by automated tests (check by hand): ... | none
 Assumptions: ...
 Risks and follow-ups: ...
-Next: review `git diff <baseline>` and commit when satisfied; /clear before an unrelated ticket. In a ticket worktree: commit on its branch, then `ticket-worktree.sh diff|clean <name>` from your terminal.
+Next: review `git diff <baseline>` and commit when satisfied; /clear before an unrelated ticket. In a ticket worktree: commit on its branch; once this chat is closed, `ticket-worktree.sh diff|clean <name>` from your terminal.
 ```

@@ -229,5 +229,159 @@ describe "single-checkout use needs no worktree"
 out=$(cd "$R" && bash "$SCRIPTS/preflight.sh")
 assert_contains "$out" "worktree=main"
 assert_contains "$out" " M README.md"
+assert_contains "$out" "checkout=untracked" "outside a session nothing is claimed"
+
+# ------------------------------------------------------------------ in-session handoff
+# Live sessions are stood in for by sleep processes (TICKET_DEV_SESSION_PID).
+O="$TEST_TMP/origin.git"
+C="$TEST_TMP/clone"
+git init -q --bare "$O"
+new_repo "$C"
+git -C "$C" remote add origin "$O"
+git -C "$C" push -q origin main 2>/dev/null
+git -C "$C" checkout -q -b staging
+printf '{}\n' >"$C/package-lock.json"
+mkdir -p "$C/server" && : >"$C/server/pnpm-lock.yaml"
+echo s >"$C/staging.txt"
+git -C "$C" add -A && git -C "$C" commit -qm staging && git -C "$C" push -q origin staging 2>/dev/null
+git -C "$C" checkout -q main
+git -C "$C" remote set-head origin main >/dev/null 2>&1
+tc() { (cd "$C" && bash "$TW" "$@"); }
+sleep 600 &
+S1=$!
+sleep 600 &
+S2=$!
+trap 'kill $S1 $S2 ${S3:-} 2>/dev/null; rm -rf "$TEST_TMP"' EXIT
+
+describe "claim: a live session owns its checkout, a second session sees it busy"
+out=$(TICKET_DEV_SESSION_PID=$S1 tc claim --session one)
+assert_contains "$out" "session=one"
+assert_contains "$out" "checkout=mine"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S1 tc claim --session one)" "checkout=mine" "same session again"
+out=$(TICKET_DEV_SESSION_PID=$S2 tc claim --session two)
+assert_eq "$?" "3" "busy exit code"
+assert_contains "$out" "checkout=busy"
+assert_contains "$out" "holder=session one since "
+assert_contains "$out" " on main"
+assert_eq "$(git -C "$C" status --porcelain)" "" "the claim lives in the git dir, not the working tree"
+out=$(cd "$C" && TICKET_DEV_SESSION_PID=$S2 bash "$SCRIPTS/preflight.sh" --session two)
+assert_eq "$?" "0" "preflight exit code"
+assert_contains "$out" "checkout=busy" "preflight reports the busy checkout"
+assert_contains "$out" "preflight: bash $SCRIPTS/preflight.sh"
+assert_contains "$out" "ticket-worktree: bash $SCRIPTS/ticket-worktree.sh"
+assert_contains "$(tc release --session two)" "checkout=unchanged" "only the owner releases"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S2 tc claim --session two --force)" "taken over from session one" "--here takes over"
+kill "$S2"; wait "$S2" 2>/dev/null
+assert_contains "$(TICKET_DEV_SESSION_PID=$S1 tc claim --session one)" "checkout=mine" "a closed session's claim is free"
+sleep 600 &
+S3=$!
+assert_contains "$(TICKET_DEV_SESSION_PID=$S3 tc claim --session one)" "checkout=mine" "resumed session in a new process"
+assert_contains "$(tc claim --session x)" "checkout=untracked" "no session process, no claim"
+tc release >/dev/null 2>&1
+assert_eq "$?" "2" "release needs a session"
+
+describe "claim: a live process whose chat went idle does not hold the checkout"
+# An IDE extension's process outlives a finished chat; its transcript stops changing.
+export CLAUDE_CONFIG_DIR="$TEST_TMP/cfg"
+T="$CLAUDE_CONFIG_DIR/projects/-some-project/one.jsonl"
+mkdir -p "$(dirname "$T")" && : >"$T"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S1 tc claim --session one)" "checkout=mine"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S3 tc claim --session two)" "checkout=busy" "fresh transcript: busy"
+touch -t 202001010000 "$T"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S3 tc claim --session two)" "checkout=mine" "idle transcript: stale claim"
+TICKET_DEV_SESSION_PID=$S1 tc claim --session one --force >/dev/null
+mkdir -p "${T%.jsonl}/subagents" && : >"${T%.jsonl}/subagents/agent-a.jsonl"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S3 tc claim --session two)" "checkout=busy" "a working subagent keeps it live"
+rm -rf "${T%.jsonl}"
+assert_contains "$(TICKET_DEV_SESSION_PID=$S3 TICKET_DEV_CLAIM_IDLE_MINUTES=0 tc claim --session two)" "checkout=mine" "idle limit is configurable"
+assert_contains "$(tc release --session two)" "checkout=released" "release on finish frees the checkout"
+assert_no_file "$C/.git/ticket-dev-session"
+unset CLAUDE_CONFIG_DIR
+
+describe "bases: saved default first, then existing candidates"
+out=$(tc bases)
+assert_eq "$(kv default "$out")" "" "no default yet"
+assert_eq "$(kv remote "$out")" "origin"
+assert_eq "$(kv remote_default "$out")" "main"
+assert_eq "$(kv candidates "$out")" "main staging"
+
+describe "create: from a freshly fetched origin/<base>, no upstream, ignored includes copied"
+other="$TEST_TMP/other"
+git clone -q "$O" "$other" 2>/dev/null
+git -C "$other" checkout -q staging && echo r >"$other/remote.txt"
+git -C "$other" add -A && git -C "$other" commit -qm remote && git -C "$other" push -q origin staging 2>/dev/null
+printf '.env\n' >>"$C/.git/info/exclude"
+echo 'SECRET=1' >"$C/.env"
+echo 'scratch' >"$C/scratch.txt"
+printf '.env\nscratch.txt\n' >"$C/.worktreeinclude"
+out=$(CLAUDECODE=1 tc create abc-1 --base staging --set-default)
+assert_eq "$?" "0" "allowed inside a session (starts none)"
+W="$C/.claude/worktrees/abc-1"
+assert_eq "$(kv worktree "$out")" "$W"
+assert_eq "$(kv branch "$out")" "worktree-abc-1"
+assert_contains "$(kv base "$out")" "origin/staging @ " "base"
+assert_contains "$(kv base "$out")" "fetched just now"
+assert_file "$W/remote.txt" "commit pushed after the clone"
+assert_file "$W/staging.txt"
+git -C "$W" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 && fail "branch tracks the base (git push would target it)" || pass
+assert_eq "$(cat "$W/.env" 2>/dev/null)" "SECRET=1" ".env copied"
+assert_no_file "$W/scratch.txt" "an untracked, not ignored file"
+assert_contains "$(kv copied "$out")" "1 file"
+assert_eq "$(kv setup_hint "$out")" "npm ci"
+assert_eq "$(kv setup_hint_dir "$out")" "server: pnpm install --frozen-lockfile" "nested lockfile"
+assert_eq "$(git -C "$C" config --get ticket-dev.worktreeBase)" "staging" "saved default"
+assert_contains "$out" "excluded=.claude/worktrees/"
+assert_not_contains "$(git -C "$C" status --porcelain)" ".claude" "main checkout status"
+assert_eq "$(kv candidates "$(tc bases)")" "staging main" "default listed first"
+assert_eq "$(kv default "$(tc bases)")" "staging"
+
+describe "create: in the new worktree the session gets its own claim and baseline"
+out=$(cd "$W" && TICKET_DEV_SESSION_PID=$S1 bash "$SCRIPTS/preflight.sh" --session one)
+assert_contains "$out" "worktree=linked"
+assert_contains "$out" "checkout=mine"
+assert_contains "$out" "pre-existing changes: none" "the copied .env is ignored, so the ticket starts clean"
+assert_contains "$(tc list | grep abc-1)" "in use (session one)"
+out=$(tc clean abc-1 --discard-ignored 2>&1)
+assert_eq "$?" "2" "clean refuses a live session"
+assert_contains "$out" "in use by Claude Code session one"
+
+describe "servers: a dev server running from the main checkout is reported in the worktree"
+(cd "$C" && exec -a vite sleep 600) &
+D1=$!
+(cd "$W" && exec -a vite sleep 600) &
+D2=$!
+trap 'kill $S1 $S2 ${S3:-} $D1 $D2 2>/dev/null; rm -rf "$TEST_TMP"' EXIT
+sleep 1
+out=$(cd "$W" && bash "$TW" servers)
+assert_contains "$out" "dev_server=$D1 vite" "main-checkout server"
+assert_not_contains "$out" "dev_server=$D2" "the worktree's own server"
+assert_contains "$(cd "$W" && TICKET_DEV_SESSION_PID=$S1 bash "$SCRIPTS/preflight.sh" --session one)" "dev_server=$D1" "preflight warns"
+assert_contains "$(tc servers)" "n/a" "main checkout"
+assert_not_contains "$(cd "$C" && TICKET_DEV_SESSION_PID=$S1 bash "$SCRIPTS/preflight.sh" --session one)" "dev_server" "not in the main checkout"
+kill $D1 $D2 2>/dev/null; wait $D1 $D2 2>/dev/null
+assert_contains "$(cd "$W" && bash "$TW" servers)" "dev_servers=none"
+
+describe "create: taken names get a suffix; bad input and missing bases are refused"
+out=$(tc create abc-1 --base main)
+assert_eq "$(kv name "$out")" "abc-1-2"
+assert_contains "$(kv base "$out")" "origin/main @ "
+git -C "$C" branch local-only
+assert_contains "$(kv base "$(tc create lo --base local-only)")" "local branch (not on origin)"
+out=$(tc create dry --base main --dry-run)
+assert_contains "$out" "dry run"
+assert_no_file "$C/.claude/worktrees/dry"
+git -C "$C" remote set-url origin "$TEST_TMP/missing.git"
+assert_contains "$(kv base "$(tc create offline --base staging 2>/dev/null)")" "cached copy" "fetch failure falls back"
+git -C "$C" remote set-url origin "$O"
+out=$(tc create x --base nope 2>&1)
+assert_eq "$?" "2" "unknown base"
+assert_contains "$out" "exists neither on origin nor locally"
+tc create x >/dev/null 2>&1
+assert_eq "$?" "2" "no base"
+tc create '../x' --base main >/dev/null 2>&1
+assert_eq "$?" "2" "bad name"
+tc create x --base 'bad..ref' >/dev/null 2>&1
+assert_eq "$?" "2" "bad base"
+assert_no_file "$C/.claude/worktrees/x"
 
 finish

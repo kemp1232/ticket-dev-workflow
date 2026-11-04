@@ -52,14 +52,17 @@ describe "verify: running checks passes"
 for c in 'bash /x/run-check.sh test -- "npm test"' 'npm test 2>&1 | tail -20' 'go test -race ./pkg/...' \
 	'git diff --stat abc123' 'git status --porcelain --untracked-files=all' 'npx eslint src/a.ts' \
 	'ruff check .' 'ruff format --check .' 'cargo fmt --check' 'npm test > /tmp/out.log 2>&1' \
-	'bash /x/run-check.sh lint --skip "no linter configured"'; do
+	'bash /x/run-check.sh lint --skip "no linter configured"' 'mkdir -p /tmp/ticket-dev/app-123/baseline' \
+	'mkdir /tmp/ticket-dev/app-123/tc && cd /tmp/ticket-dev/app-123/tc'; do
 	allow verify "$c"
 done
 
 describe "verify: fixing, formatting, snapshot updates and installs are blocked"
 for c in 'npx eslint --fix src' 'prettier --write .' 'npm test -- -u' 'npx vitest run -u' 'rm a.log' \
 	'sed -i s/a/b/ f' 'npm test > out.log' 'git stash' 'pnpm run format' 'cargo fmt' 'black .' \
-	'go test ./... -update' 'npm ci' 'bash /x/run-check.sh test -- "npm test -- -u"'; do
+	'go test ./... -update' 'npm ci' 'bash /x/run-check.sh test -- "npm test -- -u"' \
+	'mkdir -p src/tmp' 'mkdir -p /tmp/elsewhere' 'mkdir -p /tmp/ticket-dev/../../home/x' \
+	'mkdir -p /tmp/ticket-dev/k src/x' 'mkdir -p /tmp/ticket-dev/' 'mkdir -m 777 /tmp/ticket-dev/k'; do
 	deny verify "$c"
 done
 

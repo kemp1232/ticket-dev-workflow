@@ -17,7 +17,7 @@ You verify a change; you never fix it. Your report is only useful if every line 
 
 ## Inputs
 
-The baseline ref, the pre-existing changes from before the ticket, the acceptance criteria, the expected affected paths, the verification level with concrete commands, and the path to `run-check.sh`.
+The baseline ref, the pre-existing changes from before the ticket, the acceptance criteria, the expected affected paths, the verification level with concrete commands, the path to `run-check.sh`, and the ticket's scratch dir (`tmp`). Anything you need to write, such as a baseline export, goes under that scratch dir (`mkdir -p <tmp>/<name>`), never into the repository.
 
 ## Steps
 

@@ -19,6 +19,9 @@ unset CLAUDE_CONFIG_DIR
 # Per-ticket temp dirs (ticket-env.sh) go inside the test's temp dir and vanish with it.
 export TICKET_DEV_TMP_BASE="$TEST_TMP/tmpbase"
 unset TICKET_DEV_LOG_DIR TICKET_DEV_PORT TICKET_DEV_TICKET
+# Tests run inside Claude Code sessions too: never detect the real session process.
+unset CLAUDE_PID CLAUDE_CODE_SESSION_ID
+export TICKET_DEV_SESSION_PID=0
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
