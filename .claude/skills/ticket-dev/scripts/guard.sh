@@ -147,6 +147,23 @@ is_temp_target() {
 	return 1
 }
 
+# mkdir [-p] of directories inside the ticket's own scratch space (ticket-env.sh tmp,
+# <temp>/ticket-dev/<key>/...): the verifier may create those, nothing else.
+ticket_tmp_mkdir() {
+	set -- $1
+	[ "${1:-}" = mkdir ] && [ $# -gt 1 ] || return 1
+	shift
+	for _w in "$@"; do
+		case "$_w" in
+		-p | --parents) ;;
+		*..* | -*) return 1 ;;
+		*/ticket-dev/?*) is_temp_target "$_w" || return 1 ;;
+		*) return 1 ;;
+		esac
+	done
+	return 0
+}
+
 # Refuse any command that names a secret file, except existence checks.
 check_secret_words() {
 	set -- $1
@@ -377,6 +394,7 @@ RULES=${RULES//@G@/$G}
 check_segment() {
 	_seg=" $(printf '%s' "$1" | tr -d "\"'" | tr -s '[:space:]' ' ') "
 	check_secret_words "$_seg"
+	ticket_tmp_mkdir "$_seg" && return 0
 	_oldifs2=$IFS
 	IFS='
 '

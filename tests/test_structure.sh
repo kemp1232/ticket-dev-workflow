@@ -121,4 +121,17 @@ assert_contains "$(cat "$SK")" "without skipping a gate you have not shown yet" 
 assert_contains "$(cat "$SK")" "no \`sleep\`, no polling" "wait for resumed subagents"
 assert_contains "$(cat "$SK")" "never for code or diffs" "scan-secrets scope"
 
+describe "a busy checkout hands the ticket to a new worktree"
+assert_contains "$(grep '^!`' "$SK")" '--session ${CLAUDE_SESSION_ID}' "preflight knows the session"
+assert_contains "$(cat "$SK")" "checkout=busy" "checkout rule"
+HO="$SKILL/references/worktree-handoff.md"
+assert_contains "$(cat "$HO")" "EnterWorktree" "session moves into the worktree"
+assert_contains "$(cat "$HO")" "Save that branch as the default" "asks to save the default"
+assert_contains "$(cat "$HO")" "Never fall back to working in the busy checkout" "no silent fallback"
+assert_contains "$(cat "$SK")" "Take over this checkout" "a busy checkout asks instead of moving"
+assert_contains "$(cat "$SK")" "release --session <session>" "the claim is released when the ticket stops"
+assert_contains "$(cat "$SK")" "Dev server:" "report warns about a dev server serving the main checkout"
+assert_contains "$(cat "$HO")" "setup_hint_dir" "nested installs"
+assert_contains "$(cat "$HO")" "dev_server=" "dev-server warning in the handoff"
+
 finish

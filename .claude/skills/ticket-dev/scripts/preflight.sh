@@ -10,6 +10,11 @@
 
 set -u
 
+# --session ID: the Claude Code session running /ticket-dev, used to tell this
+# session's claim on the checkout from another live session's.
+SESSION=""
+[ "${1:-}" = --session ] && SESSION=${2:-}
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 MAX_STATUS_LINES=40
@@ -153,8 +158,18 @@ bash "$SCRIPT_DIR/browser-check.sh" config --summary --project-dir "$ROOT" 2>&1 
 
 echo
 echo "### Ticket environment (this checkout only; parallel worktrees each get their own)"
-bash "$SCRIPT_DIR/ticket-env.sh" "$ROOT" 2>&1 | grep -E '^(ticket_id|worktree|main_checkout|branch|tmp|port)=' | tr '\n' ' ' | sed 's/ $//'
+tenv=$(bash "$SCRIPT_DIR/ticket-env.sh" "$ROOT" 2>&1)
+printf '%s\n' "$tenv" | grep -E '^(ticket_id|worktree|main_checkout|branch|tmp|port)=' | tr '\n' ' ' | sed 's/ $//'
 echo
+if git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+	(cd "$ROOT" && bash "$SCRIPT_DIR/ticket-worktree.sh" claim ${SESSION:+--session "$SESSION"} 2>&1) | tr '\n' ' ' | sed 's/ $//'
+	echo
+	# In a worktree, a dev server still running from the main checkout shows the old code.
+	case "$tenv" in *worktree=linked*)
+		(cd "$ROOT" && bash "$SCRIPT_DIR/ticket-worktree.sh" servers 2>&1) | head -n 5
+		;;
+	esac
+fi
 
 echo
 echo "### Verification candidates"
@@ -162,6 +177,8 @@ bash "$SCRIPT_DIR/detect-checks.sh" "$ROOT" 2>&1
 
 echo
 echo "### Scripts (pass these absolute paths to subagents)"
+echo "preflight: bash $SCRIPT_DIR/preflight.sh"
+echo "ticket-worktree: bash $SCRIPT_DIR/ticket-worktree.sh (orchestrator only)"
 echo "route: bash $SCRIPT_DIR/route.sh"
 echo "run-check: bash $SCRIPT_DIR/run-check.sh"
 echo "scan-secrets: bash $SCRIPT_DIR/scan-secrets.sh"
